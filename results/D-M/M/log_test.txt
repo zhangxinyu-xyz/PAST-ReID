@@ -1,0 +1,50 @@
+Market1501 dataset loaded
+  subset   | # ids | # images
+  ---------------------------
+  train    |   751 |    12936
+  query    |   750 |     3368
+  gallery  |   751 |    15913
+market1501 Datasets Has beed loaded.
+=> Experiment Output Directory: ./results/D-M/M/
+[PYTORCH VERSION]: 0.4.1
+Keys not found in source state_dict: 
+	 num_batches_tracked  x53
+Keys not found in destination state_dict: 
+	 fc.weight
+	 fc.bias
+=> Loaded ImageNet Model: ../PAST/initialization/pretrained_model/resnet50-19c8e357.pth
+Model Name:
+resnet50_PCBPool_nine
+Keys not found in destination state_dict: 
+	 module.cls_list.1.weight
+	 module.cls_list.0.weight
+	 module.cls_list.5.weight
+	 module.cls_list.6.weight
+	 module.cls_list.8.bias
+	 module.cls_list.7.bias
+	 module.cls_list.2.bias
+	 module.cls_list.8.weight
+	 module.cls_list.2.weight
+	 module.cls_list.1.bias
+	 module.cls_list.4.bias
+	 module.cls_list.3.weight
+	 module.cls_list.7.weight
+	 module.cls_list.5.bias
+	 module.cls_list.3.bias
+	 module.cls_list.6.bias
+	 module.cls_list.4.weight
+	 module.cls_list.0.bias
+=> Loaded [model] from ../PAST/best_model/D-M_best-model.pth.tar
+
+extracting query features
+
+extracting gallery features
+
+Mean AP: 54.62%
+market1501 CMC Scores
+  top-1         78.38%
+  top-5         88.63%
+  top-10        92.01%
+Cross Ddomain CMC Scores
+Source	 Target	 Top1	 Top5	 Top10	 MAP
+duke->market1501: 78.38% 88.63% 92.01% (54.62%)
