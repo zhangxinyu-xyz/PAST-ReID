@@ -2,7 +2,8 @@
 
 Self-Training With Progressive Augmentation for Unsupervised Cross-Domain Person Re-identification (Accepted by ICCV19)
 
-[[PDF]](https://arxiv.org/abs/1907.13315)
+[[PDF-CameraReady]](https://drive.google.com/open?id=1zP0jl66y-ehx0OOxKzpj90b1-tL7iE72)
+[[Arxiv]](https://arxiv.org/abs/1907.13315)
 [[Project]](https://github.com/zhangxinyu-xyz/PAST-ReID)
 
 **This code is ONLY** released for academic use.
