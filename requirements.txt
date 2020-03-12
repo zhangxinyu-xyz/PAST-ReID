@@ -1,0 +1,13 @@
+numpy==1.14.3
+opencv-python==3.4.1
+scipy==1.1.0
+easydict==1.9
+pytorch==0.4.1
+torchvision==0.2.1
+tqdm==4.32.1
+Pillow==5.1.0
+scikit-learn==0.19.1
+tensorboardX==1.6
+hdbscan==0.8.18
+h5py==2.7.1
+yacs==0.1.6

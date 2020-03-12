@@ -2,12 +2,10 @@
 
 Self-Training With Progressive Augmentation for Unsupervised Cross-Domain Person Re-identification (Accepted by ICCV19)
 
-[[PDF-CameraReady]](http://openaccess.thecvf.com/content_ICCV_2019/html/Zhang_Self-Training_With_Progressive_Augmentation_for_Unsupervised_Cross-Domain_Person_Re-Identification_ICCV_2019_paper.html)
+[[PDF]](http://openaccess.thecvf.com/content_ICCV_2019/html/Zhang_Self-Training_With_Progressive_Augmentation_for_Unsupervised_Cross-Domain_Person_Re-Identification_ICCV_2019_paper.html)
 [[Project]](https://github.com/zhangxinyu-xyz/PAST-ReID)
 
 **This code is ONLY** released for academic use.
-
-**This version is ONLY** containing testing process. The training code will be released later. 
 
 ## Pipeline
 <div align=center>
@@ -29,7 +27,7 @@ Self-Training With Progressive Augmentation for Unsupervised Cross-Domain Person
 
     b. Move them to ```$PAST/data/```
 
-    c. Insure the data folder like the following structure (otherwise you should modify the data path in ```$PAST/reid/datasets/[DATANAME].py```):
+    c. Insure the data folder like the following structure (otherwise you should modify the data path in ```~/reid/datasets/[DATANAME].py```):
 ```
 $PAST/data
     Market-1501-v15.09.15
@@ -57,7 +55,18 @@ $PAST/data
     d. If you just want to test our method, you can download our model: [D-M_best-model.pth.tar](https://drive.google.com/open?id=1fPPSh-s8r--715fsGfiSHJgTcdLzZZw3) (transfer from DukeMTMC-reID to Market-1501), [M-D_best-model.pth.tar](https://drive.google.com/open?id=1LfvWG6EeoTDasW-GrGAT9fNJTw1DmEkE) (transfer from Market-1501 to DukeMTMC-reID). Move them to ```$PAST/best_model/```
 
 ## Train
-Will be released later. Please wait.
+You can directly run `train_*.sh ` file for the transferring training process.
+
+```
+sh train_D2M.sh  ### from Duke to Market1501
+sh train_M2D.sh  ### from Market1501 to Duke
+```
+
+You can also modify the `s_name` and `name` with the corresponding initial files to run other transferring processes.
+
+With **Pytorch 0.4.1**, we shall get about 78.0%/54.0% rank-1/mAP on Market-1501 (from DukeMTMC-reID to Market-1501) and 72.0%/54.0% rank-1/mAP on DukeMTMC-reID (from Market-1501 to DukeMTMC-reID).
+
+Note that we use **2 GPUs**.
 
 ## Test
 You can simply run `test_*.sh ` file for the transferring testing process.
@@ -87,10 +96,11 @@ We shall get about **78.38%/54.62%** rank-1/mAP on Market-1501 (from DukeMTMC-re
 
 If you find this code useful in your research, please kindly consider citing our paper:
 
-    @inproceedings{zhang2018selftraining,
-    title={Self-training With progressive augmentation for unsupervised cross-domain person re-identification},
+    @inproceedings{zhang2019self,
+    title={Self-training with progressive augmentation for unsupervised cross-domain person re-identification},
     author={Zhang, Xinyu and Cao, Jiewei and Shen, Chunhua and You, Mingyu},
-    booktitle ={ICCV},
+    booktitle={Proceedings of the IEEE International Conference on Computer Vision},
+    pages={8222--8231},
     year={2019}
     }
 

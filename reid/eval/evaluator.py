@@ -26,9 +26,11 @@ def extract_features(args, model, data_loader, print_freq=10):
 
     end = time.time()
     for i, (imgs, fnames, pids, _) in enumerate(data_loader):
+        #if i>=1:
+        #    break
         data_time.update(time.time() - end)
 
-        outputs = extract_cnn_feature(model, imgs, args)
+        outputs = extract_cnn_feature(model, imgs, args)  # outputs = {'feat': feat}
         outputs = outputs['feat']
 
         for fname, output, pid in zip(fnames, outputs, pids):

@@ -16,9 +16,6 @@ from reid.optim.pcb_trainer import PCBTrainer
 from reid.eval.rerankor import Rerankor
 
 def main(args):
-    assert args.evaluate, "This version of code is only for test. We will release the training code later.\n" \
-                          "If you want to use this code, please set the config with '--evaluate'"
-    
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -75,7 +72,7 @@ if __name__ == '__main__':
     parser.add_argument('--s_name', type=str, default='market1501', help='pretrained source dataset name')
     
     # train parameters
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--workers', type=int, default=0)
     parser.add_argument('--split', type=int, default=0)
     parser.add_argument('--height', type=int, default=256,
@@ -93,6 +90,9 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--continue_training', action='store_true',
                         help='whether continue training or not. if True, continue from the intermediate status')
+    parser.add_argument('--load_optimizer', action='store_true',
+                        help='when continue training, whether load optimizer and scheduler or not.')
+    parser.add_argument('--save_freq', type=int, default=20, help='how many epochs to save checkpoint')
     
     # test parameters
     parser.add_argument('--dist_type', type=str, default='cosine', choices=['euclidean', 'cosine'])
@@ -113,12 +113,71 @@ if __name__ == '__main__':
     parser.add_argument('--pool_type', type=str, default='PCBPool_nine', choices=['PCBPool', 'PCBPool_nine'])
     parser.add_argument('--forward_type', type=str, default='reid')
     
+    # optimizer
+    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'])
+    parser.add_argument('--weight_decay', type=float, default=5e-4)
+    parser.add_argument('--momentum', type=float, default=0.9, help='the parameter of SGD')
+    parser.add_argument('--nesterov', type=bool, default=False, help='the parameter of SGD')
+    parser.add_argument('--ft_lr', type=float, default=0.0001,
+                        help="learning rate of finetune parameters")
+    parser.add_argument('--new_params_lr', type=float, default=0.0002, help="learning rate of new parameters")
+    parser.add_argument('--lr_decay_epochs', nargs='*', type=int, default=25, help="epoch for lr descend")
+    parser.add_argument('--num_train_loader', type=bool, default=False, help="epoch for lr descend * len(train_loader)")
+    parser.add_argument('--start_epochs', type=int, default=0, help="start_epochs")
+    parser.add_argument('--epochs', type=int, default=60, help="max_epochs")
+    
+    parser.add_argument('--ft_lr_promoting', type=float, default=0.00005,
+                        help="learning rate of finetune parameters for supervision")
+    parser.add_argument('--new_params_lr_promoting', type=float, default=0.001,
+                        help="learning rate of new parameters for supervision")
+    parser.add_argument('--lr_decay_iters', nargs='*', type=int, default=8, help="iters for lr descend")
+    parser.add_argument('--start_iters', type=int, default=0, help="start_iters")
+    parser.add_argument('--iters', type=int, default=10, help="max_iters")
+    
+    parser.add_argument('--dbscan_type', type=str, default='hdbscan', choices=['dbscan', 'hdbscan'])
+    parser.add_argument('--dbscan_use', type=bool, default=True, help='whether use dbscan or not')
+    parser.add_argument('--dbscan_iter', type=int, default=20, help="dbscan_iter epochs to calculate once dbscan")
+    parser.add_argument('--dbscan_minsample', type=int, default=10, help="dbscan_minsample")
+    parser.add_argument('--start_dbscan', type=int, default=-1, help="start_epochs")
+    
+    # loss
+    parser.add_argument('--idloss_use', action='store_true', help='whether use ID loss or not')
+    parser.add_argument('--idloss_weight', type=float, default=0.1, help='ID loss weight')
+    parser.add_argument('--idloss_name', type=str, default='idL', help='ID loss name')
+    parser.add_argument('--idloss_iter', type=int, default=1, help="idloss_iter epochs to calculate once idloss")
+    
+    parser.add_argument('--triloss_use', action='store_true', help='whether use Triplet loss or not')
+    parser.add_argument('--triloss_weight', type=float, default=0.1, help='Triplet loss weight')
+    parser.add_argument('--triloss_rho_ctl', type=float, default=1.0, help='Triplet loss weight')
+    parser.add_argument('--triloss_rho_rtl', type=float, default=1.0, help='Triplet loss weight')
+    parser.add_argument('--triloss_name', type=str, default='triL', help='Triplet loss name')
+    parser.add_argument('--triloss_mean', action='store_true', help='part triplet loss sum or mean')
+    # parser.add_argument('--triloss_online', action='store_true', help='part triplet loss sum or mean')
+    parser.add_argument('--triloss_part', type=int, default=9, help='Triplet loss part sum or mean')
+    
+    parser.add_argument('--tri_sampler_type', type=str, default='CTL_RTL', help='Triplet sampler type',
+                        choices=['CTL', 'RTL', 'CTL_RTL'])
+    parser.add_argument('--k_nearest', type=int, default=20, help='k_nearest for tri_sampler_type==softmargintriplet')
+    parser.add_argument('--hard_type', type=str, default='tri_hard',
+                        help='batch triplets selection when tri_sampler_type==RandomIdentitySampler')
+    parser.add_argument('--margin', type=float, default=0.3, help='Triplet loss margin')
+    parser.add_argument('--num_instances', type=int, default=4,
+                        help="number of instances per identity (if use triplet loss)")
+    parser.add_argument('--norm_by_num_of_effective_triplets', type=bool, default=False,
+                        help='Triplet loss norm_by_num_of_effective_triplets')
+    
     # rerank misc parameters
     parser.add_argument('--rerank', action='store_true', help="rerank or not")
+    parser.add_argument('--dist_epoch', nargs='*', type=int, default=0,
+                        help="epoch for rerank distmat, the sequence is the same with test_names")
     parser.add_argument('--k1', type=int, default=20, help="rerank k1")
     parser.add_argument('--k2', type=int, default=6, help="rerank k2")
     parser.add_argument('--lambda_value', type=float, default=0.3, help='rerank lambda_value')
     parser.add_argument('--rerank_eval', action='store_true', help="after rerank, whether evaluate or not")
+    parser.add_argument('--rerank_dist_file', type=str, default='', metavar='PATH',
+                        help='initial rerank distmat file path')
     parser.add_argument('--rho', type=float, default=1.6e-3,
                         help="rho percentage, default: 1.6e-3")
+    parser.add_argument('--init_t_t_f', type=str, default='', metavar='PATH',
+                        help='initial target train features file path')
     main(parser.parse_args())

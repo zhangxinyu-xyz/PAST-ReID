@@ -18,4 +18,13 @@ def create_embedding(in_dim=None, out_dim=None, local_conv=False):
     ]
     return nn.Sequential(*layers)
 
+def get_temporal_features(temporal_features, t_f, epoch):
+    if epoch == 0:
+        temporal_features[0] = copy.deepcopy(t_f)
+    elif epoch == 1:
+        temporal_features[1] = copy.deepcopy(t_f)
+    else:
+        temporal_features[0] = copy.deepcopy(temporal_features[1])
+        temporal_features[1] = copy.deepcopy(t_f)
+    return temporal_features
 

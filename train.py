@@ -1,0 +1,350 @@
+from __future__ import print_function, absolute_import
+import argparse
+import os.path as osp
+import os
+
+import numpy as np
+import copy
+import sys
+import torch
+from torch.backends import cudnn
+
+from reid import datasets
+from reid import models
+from reid.models.cal_cls_params import CalClsParams
+from reid.utils.data import create_test_data_loader, create_train_data_loader
+from reid.utils.data.cluster import Cluster
+from reid.utils.logging import Logger
+from reid.optim.pcb_trainer import PCBTrainer
+from reid.eval.rerankor import Rerankor
+from reid.utils.osutils import load_mat
+
+def main(args):
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    cudnn.benchmark = True
+
+    # Redirect print to both console and log file
+    sys.stdout = Logger(osp.join(args.log_dir, 'log.txt'))
+
+    args.num_classes = 1
+
+    # Create train data loaders
+    ori_dataset = datasets.create(args.name, args.data_dir)
+    cur_dataset = copy.deepcopy(ori_dataset)    # initialize the current target dataset as the whole target dataset
+    dist = load_mat(args.rerank_dist_file, args.name, args.rerank_dist_file, 'dist')
+
+    if args.dbscan_use:
+        cluster = Cluster(args, ori_dataset.train)
+        if args.start_dbscan == -1:
+            cur_dataset.train, cur_dataset.train_indices = cluster.hdbscancluster(dist, iteration=-1)
+
+    train_loader_CTL, train_loader_RTL = create_train_data_loader(args, args.name, cur_dataset, dist=dist,
+                                                           istrain=True, savepath=args.save_dir) 
+
+    # Create test data loaders
+    test_dataset = {}
+
+    test_dataset['dataset'] = datasets.create(args.name, args.data_dir)
+    test_dataset['train_loader'], test_dataset['query_loader'], test_dataset['gallery_loader'] \
+            = create_test_data_loader(args, args.name, test_dataset['dataset'])
+
+    if not args.num_train_loader:
+        args.num_train_loader = len(train_loader_CTL)
+
+    ###### initial trainer #######
+    if args.idloss_use:
+        t_f = load_mat(args.init_t_t_f, args.name, args.init_t_t_f, 'features')
+        calclsparams = CalClsParams(args.name, cur_dataset, t_f)
+        cls_params = calclsparams.cal_cls_params()
+        trainer = PCBTrainer(args, cls_params=cls_params)
+        trainer.model = trainer.update_cls_params(trainer.model, cls_params)
+        print(trainer.model.module.cls_list)
+    else:
+        cls_params = None
+        trainer = PCBTrainer(args, cls_params=cls_params)
+
+    ###############  train and test  ################
+
+    best_source = [np.zeros(3), np.zeros(1), np.zeros(1), np.zeros(1)]
+    best_state = 'Conservative Stage'
+
+    ## initial rerankor ##
+    rerankor = Rerankor()
+
+    ######################### start iter ########################
+    for iteration in range(args.start_iters, args.iters):
+        ################ Start Conservative Stage Training  ##############################
+        print("--------------------------Iter: {} Starting Conservative Stage Training----------------------".format(iteration))
+        stage = 'Conservative Stage'
+
+        for epoch in range(args.start_epochs, args.epochs):
+            trainer.train_conservative(iteration, epoch, train_loader_CTL, train_loader_RTL, print_freq=args.print_freq, cls_list=None, stage=stage)
+            torch.cuda.empty_cache()
+            print('Iteration: {}/{} Epoch: {}/{} has down'.format(iteration, args.iters, epoch, args.epochs))
+
+            evaluator = trainer.test()
+            if (epoch+1) % args.save_freq == 0 or epoch == args.epochs - 1:
+                # save model of every save_freq epochs
+                trainer.may_save_ckpt(name=args.name)
+                ######################## test model of every 10 * save_freq epochs###########################
+                scores = {}
+                scores['cmc_scores'], scores['mAP'], _, _, _ = \
+                    evaluator.evaluate(args.name, test_dataset['query_loader'], test_dataset['gallery_loader'],
+                                       test_dataset['dataset'].query, test_dataset['dataset'].gallery, istrain=False,
+                                       isevaluate=True, issave=True, savepath=args.save_dir)
+
+                # save best model of target
+                if scores['mAP'] >= best_source[1] and scores['cmc_scores'][0] >= best_source[0][0]:
+                    trainer.may_save_ckpt(name='Best_' + args.name)
+                    best_source[0] = copy.deepcopy(scores['cmc_scores'])
+                    best_source[1] = copy.deepcopy(scores['mAP'])
+                    best_source[2] = copy.deepcopy(epoch)
+                    best_source[3] = copy.deepcopy(iteration)
+                    best_state = 'Conservative Stage'
+
+                print('Cross Domain CMC Scores')
+                print('Source\t Target\t Top1\t Top5\t Top10\t MAP\t Epoch\t Iteration\t Best_state')
+
+                print('{}->{}: {:6.2%} {:6.2%} {:6.2%} ({:.2%}) {} {} {}'.format(args.s_name, args.name,
+                                    scores['cmc_scores'][0], scores['cmc_scores'][1], scores['cmc_scores'][2],
+                                    scores['mAP'], epoch, iteration, best_state))
+
+            if (epoch+1) % args.dbscan_iter == 0:
+                _, _, t_f, _, _ = \
+                    evaluator.evaluate(args.name, test_dataset['train_loader'], test_dataset['train_loader'],
+                                         test_dataset['dataset'].train, test_dataset['dataset'].train,
+                                         savepath=args.save_dir, issave=True, istrain=True, isevaluate=False)
+
+                if epoch != args.epochs - 1:
+                    dist = rerankor.rerank(t_f, t_f,
+                                           savepath=os.path.join(args.save_dir, 'rerank'),
+                                           save=True, isevaluate=args.rerank_eval,
+                                           dataset=test_dataset['dataset'])
+
+                    ################## train_loader, dataset is after cluster ###############################
+                    if args.dbscan_use:
+                        cur_dataset.train, cur_dataset.train_indices = cluster.hdbscancluster(dist, iteration=iteration)
+                        
+                    train_loader_CTL, train_loader_RTL = create_train_data_loader(args, args.name, cur_dataset,
+                                                                                  dist=dist, istrain=True, savepath=args.save_dir)
+
+                    print('Iteration: {} Epoch: {} train loader has changed.'.format(iteration, epoch))
+                    del dist
+                else:
+                    del train_loader_CTL
+                    del train_loader_RTL
+                    try:
+                        del dist
+                    except:
+                        pass
+
+        print("--------------------------Iter: {} Ending Conservative Stage Training----------------------".format(iteration))
+
+        ################# start train supervision model ################
+        if args.idloss_use and (iteration % args.idloss_iter == 0):
+            calclsparams = CalClsParams(args.name, cur_dataset, t_f)
+            cls_params = calclsparams.cal_cls_params()
+            trainer.model = trainer.update_cls_params(trainer.model, cls_params)
+            print(trainer.model.module.cls_list)
+        else:
+            cls_params = None
+
+        ## change to supervision lr_scheduler ##
+        train_loader_IDL, _ = create_train_data_loader(args, args.name, cur_dataset,
+                                                   istrain=True, idloss_only=True,
+                                                   savepath=os.path.join(args.save_dir))
+        trainer.create_lr_scheduler_promoting(len(train_loader_IDL))
+        
+        print("--------------------------Iter: {} Starting Promoting Stage Training----------------------".format(iteration))
+        stage = 'Promoting Stage'
+        for epoch in range(args.epochs):
+            trainer.train_promoting(iteration, epoch, train_loader_IDL, print_freq=args.print_freq, cls_list=trainer.model.module.cls_list, stage=stage)
+            torch.cuda.empty_cache()
+            evaluator = trainer.test()
+
+            if epoch % args.save_freq == 0 or epoch == args.epochs - 1:
+                # save model of every save_freq epochs
+                trainer.may_save_ckpt(name=args.name)
+                ######################## test ###########################
+           
+                scores = {}
+                scores['cmc_scores'], scores['mAP'], _, _, _ = \
+                    evaluator.evaluate(args.name, test_dataset['query_loader'], test_dataset['gallery_loader'],
+                                       test_dataset['dataset'].query, test_dataset['dataset'].gallery, istrain=False,
+                                       isevaluate=True, issave=True, savepath=args.save_dir)
+
+                    # save best model of target
+                if scores['mAP'] >= best_source[1] and scores['cmc_scores'][0] >= best_source[0][0]:
+                    trainer.may_save_ckpt(name='Best_' + args.name)
+                    best_source[0] = copy.deepcopy(scores['cmc_scores'])
+                    best_source[1] = copy.deepcopy(scores['mAP'])
+                    best_source[2] = copy.deepcopy(epoch)
+                    best_source[3] = copy.deepcopy(iteration)
+                    best_state = 'Promoting Stage'
+
+                print('Cross Domain CMC Scores')
+                print('Source\t Target\t Top1\t Top5\t Top10\t MAP\t Epoch\t Iteration\t Best_state')
+                print('{}->{}: {:6.2%} {:6.2%} {:6.2%} ({:.2%}) {} {} {}'.format(args.s_name, args.name,
+                                                                                 scores['cmc_scores'][0],
+                                                                                 scores['cmc_scores'][1],
+                                                                                 scores['cmc_scores'][2],
+                                                                                 scores['mAP'], epoch, iteration,
+                                                                                 best_state))
+
+
+        evaluator = trainer.test()
+        _, _, t_f, _, _ = \
+            evaluator.evaluate(args.name, test_dataset['train_loader'], test_dataset['train_loader'],
+                               test_dataset['dataset'].train, test_dataset['dataset'].train,
+                               savepath=args.save_dir, issave=True, istrain=True, isevaluate=False)
+
+        dist = rerankor.rerank(t_f, t_f,
+                               savepath=os.path.join(args.save_dir, 'rerank'),
+                               save=True, isevaluate=args.rerank_eval,
+                               dataset=test_dataset['dataset'])
+
+        ################## get new train_loader and dataset before next conservative ###############################
+
+        if args.dbscan_use:
+            cur_dataset.train, cur_dataset.train_indices = cluster.hdbscancluster(dist, iteration=iteration+1)
+
+        train_loader_CTL, train_loader_RTL = create_train_data_loader(args, args.name, cur_dataset,
+                                                                      dist=dist, istrain=True, savepath=args.save_dir)
+
+        del train_loader_IDL
+        del dist
+
+        print("--------------------------Iter: {} Ending Promoting Stage Training----------------------".format(iteration))
+
+        print('[Best test] Cross Domain CMC Scores')
+        print('Source\t Target\t Top1\t Top5\t Top10\t MAP\t Epoch\t Iteration\t Best_state')
+        print('{}->{}: {:6.2%} {:6.2%} {:6.2%} ({:.2%}) {} {} {}'.format(args.s_name, args.name, best_source[0][0],
+                                                                           best_source[0][1], best_source[0][2],
+                                                                           best_source[1], best_source[2],
+                                                                           best_source[3], best_state))
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="PAST")
+    # data
+    parser.add_argument('--data_dir', type=str, metavar='PATH',
+                        default='./data/')
+    parser.add_argument('--name', type=str, default='market1501',
+                        choices=datasets.names())
+    parser.add_argument('--log_dir', type=str, metavar='PATH',
+                        default='./log')
+    parser.add_argument('--save_dir', type=str, metavar='PATH', default='./checkpoint',
+                        help='Directory to store experiment output, including model checkpoint and tensorboard files, etc.')
+    parser.add_argument('--s_name', type=str, default='market1501', help='pretrained source dataset name')
+
+
+    # train parameters
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--workers', type=int, default=0)
+    parser.add_argument('--split', type=int, default=0)
+    parser.add_argument('--height', type=int, default=256,
+                        help="input height, default: 256 for resnet*, "
+                             "144 for inception")
+    parser.add_argument('--width', type=int, default=128,
+                        help="input width, default: 128 for resnet*, "
+                             "56 for inception")
+    parser.add_argument('--combine_trainval', action='store_true',
+                        help="train and val sets together for training, "
+                             "val set alone for validation")
+    parser.add_argument('--phase', type=str, default='normal',
+                        choices=['scratch', 'normal', 'finetune', 'fix_finetune_layers'])
+    parser.add_argument('--print_freq', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=1)
+    parser.add_argument('--continue_training', action='store_true',
+                        help='whether continue training or not. if True, continue from the intermediate status')
+    parser.add_argument('--load_optimizer', action='store_true',
+                        help='when continue training, whether load optimizer and scheduler or not.')
+    parser.add_argument('--save_freq', type=int, default=20, help='how many epochs to save checkpoint')
+
+    # test parameters
+    parser.add_argument('--dist_type', type=str, default='cosine', choices=['euclidean', 'cosine'])
+    parser.add_argument('--resume_file', type=str, default='', metavar='PATH')
+    parser.add_argument('--evaluate', action='store_true',
+                        help="evaluation only")
+    
+    # model
+    parser.add_argument('--model_name', type=str, default='resnet50', choices=models.names())
+    parser.add_argument('--embedding_dim', type=int, default=256)
+    parser.add_argument('--num_parts', type=int, default=6)
+    parser.add_argument('--dropout', type=float, default=0.5)
+    parser.add_argument('--backbone_pretrained', type=bool, default=True)
+    parser.add_argument('--backbone_pretrained_model_dir', type=str, default='initialization/pretrained_model/', metavar='PATH')
+    parser.add_argument('--last_conv_stride', type=int, default=1)
+    parser.add_argument('--local_conv', action='store_true', help='last_conv using linear or conv')
+    parser.add_argument('--max_or_avg', type=str, default='max')
+    parser.add_argument('--pool_type', type=str, default='PCBPool_nine', choices=['PCBPool', 'PCBPool_nine'])
+    parser.add_argument('--forward_type', type=str, default='reid')
+
+    # optimizer
+    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'])
+    parser.add_argument('--weight_decay', type=float, default=5e-4)
+    parser.add_argument('--momentum', type=float, default=0.9, help='the parameter of SGD')
+    parser.add_argument('--nesterov', type=bool, default=False, help='the parameter of SGD')
+    parser.add_argument('--ft_lr', type=float, default=0.0001,
+                        help="learning rate of finetune parameters")
+    parser.add_argument('--new_params_lr', type=float, default=0.0002, help="learning rate of new parameters")
+    parser.add_argument('--lr_decay_epochs', nargs='*', type=int, default=25, help="epoch for lr descend")
+    parser.add_argument('--num_train_loader', type=bool, default=False, help="epoch for lr descend * len(train_loader)")
+    parser.add_argument('--start_epochs', type=int, default=0, help="start_epochs")
+    parser.add_argument('--epochs', type=int, default=60, help="max_epochs")
+
+    parser.add_argument('--ft_lr_promoting', type=float, default=0.00005,
+                        help="learning rate of finetune parameters for supervision")
+    parser.add_argument('--new_params_lr_promoting', type=float, default=0.001,
+                        help="learning rate of new parameters for supervision")
+    parser.add_argument('--lr_decay_iters', nargs='*', type=int, default=8, help="iters for lr descend")
+    parser.add_argument('--start_iters', type=int, default=0, help="start_iters")
+    parser.add_argument('--iters', type=int, default=10, help="max_iters")
+
+    parser.add_argument('--dbscan_type', type=str, default='hdbscan', choices=['dbscan', 'hdbscan'])
+    parser.add_argument('--dbscan_use', type=bool, default=True, help='whether use dbscan or not')
+    parser.add_argument('--dbscan_iter', type=int, default=20, help="dbscan_iter epochs to calculate once dbscan")
+    parser.add_argument('--dbscan_minsample', type=int, default=10, help="dbscan_minsample")
+    parser.add_argument('--start_dbscan', type=int, default=-1, help="start_epochs")
+
+
+    # loss
+    parser.add_argument('--idloss_use', action='store_true', help='whether use ID loss or not')
+    parser.add_argument('--idloss_weight', type=float, default=0.1, help='ID loss weight')
+    parser.add_argument('--idloss_name', type=str, default='idL', help='ID loss name')
+    parser.add_argument('--idloss_iter', type=int, default=1, help="idloss_iter epochs to calculate once idloss")
+    
+    parser.add_argument('--triloss_use', action='store_true', help='whether use Triplet loss or not')
+    parser.add_argument('--triloss_weight', type=float, default=0.1, help='Triplet loss weight')
+    parser.add_argument('--triloss_rho_ctl', type=float, default=1.0, help='Triplet loss weight')
+    parser.add_argument('--triloss_rho_rtl', type=float, default=1.0, help='Triplet loss weight')
+    parser.add_argument('--triloss_name', type=str, default='triL', help='Triplet loss name')
+    parser.add_argument('--triloss_mean', action='store_true', help='part triplet loss sum or mean')
+    parser.add_argument('--triloss_part', type=int, default=9, help='Triplet loss part sum or mean')
+
+    parser.add_argument('--tri_sampler_type', type=str, default='CTL_RTL', help='Triplet sampler type', choices=['CTL','RTL','CTL_RTL'])
+    parser.add_argument('--k_nearest', type=int, default=20, help='k_nearest for tri_sampler_type==softmargintriplet')
+    parser.add_argument('--hard_type', type=str, default='tri_hard',
+                        help='batch triplets selection when tri_sampler_type==RandomIdentitySampler')
+    parser.add_argument('--margin', type=float, default=0.3, help='Triplet loss margin')
+    parser.add_argument('--num_instances', type=int, default=4,
+                        help="number of instances per identity (if use triplet loss)")
+    parser.add_argument('--norm_by_num_of_effective_triplets', type=bool, default=False,
+                        help='Triplet loss norm_by_num_of_effective_triplets')
+
+    # rerank misc parameters
+    parser.add_argument('--rerank', action='store_true', help="rerank or not")
+    parser.add_argument('--dist_epoch', nargs='*', type=int, default=0,
+                        help="epoch for rerank distmat, the sequence is the same with test_names")
+    parser.add_argument('--k1', type=int, default=20, help="rerank k1")
+    parser.add_argument('--k2', type=int, default=6, help="rerank k2")
+    parser.add_argument('--lambda_value', type=float, default=0.3, help='rerank lambda_value')
+    parser.add_argument('--rerank_eval', action='store_true', help="after rerank, whether evaluate or not")
+    parser.add_argument('--rerank_dist_file', type=str, default='', metavar='PATH',
+                        help='initial rerank distmat file path')
+    parser.add_argument('--rho', type=float, default=1.6e-3,
+                        help="rho percentage, default: 1.6e-3")
+    parser.add_argument('--init_t_t_f', type=str, default='', metavar='PATH',
+                        help='initial target train features file path')
+    main(parser.parse_args())

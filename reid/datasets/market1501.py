@@ -1,7 +1,8 @@
 from __future__ import print_function, absolute_import
 import numpy as np
 import pdb
-from glob import glob
+#from glob import glob
+import glob
 import re
 import os
 
@@ -23,7 +24,7 @@ class Market1501(object):
         pattern = re.compile(r'([-\d]+)_c(\d)')
         all_pids = {}
         ret = []
-        fpaths = sorted(glob(os.path.join(self.images_dir, path, '*.jpg')))
+        fpaths = sorted(glob.glob(os.path.join(self.images_dir, path, '*.jpg')))
         for fpath in fpaths:
             fname = os.path.basename(fpath)
             pid, cam = map(int, pattern.search(fname).groups())
