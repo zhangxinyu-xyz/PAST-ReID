@@ -5,7 +5,7 @@ easydict==1.9
 pytorch==0.4.1
 torchvision==0.2.1
 tqdm==4.32.1
-Pillow==5.1.0
+Pillow==8.1.1
 scikit-learn==0.19.1
 tensorboardX==1.6
 hdbscan==0.8.18
