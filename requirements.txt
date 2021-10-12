@@ -1,5 +1,5 @@
 numpy==1.14.3
-opencv-python==3.4.1
+opencv-python==3.4.7.28
 scipy==1.1.0
 easydict==1.9
 pytorch==0.4.1
